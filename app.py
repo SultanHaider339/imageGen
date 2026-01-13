@@ -1,79 +1,124 @@
-# app.py - version with NO token required
-
 import streamlit as st
-from diffusers import StableDiffusionPipeline
 import torch
+from diffusers import StableDiffusionPipeline
+import time
 from PIL import Image
 import io
-import time
 
-st.set_page_config(page_title="Text → Image • No Login", layout="wide")
-st.title("Free Text-to-Image (no HuggingFace login required)")
-st.caption("Using publicly accessible model • Quality is limited in 2026 without login")
+st.set_page_config(
+    page_title="Text → Image • No Login",
+    page_icon="🎨",
+    layout="wide"
+)
 
-@st.cache_resource(show_spinner="Loading model... (happens once)")
+st.title("Free Text-to-Image Generator")
+st.caption("No Hugging Face token needed • Using public model • Quality is modest")
+
+# ==============================================
+#   MODEL LOADING (cached)
+# ==============================================
+@st.cache_resource(show_spinner="Loading model... (first time: ~2–4 min)")
 def load_model():
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "dreamlike-art/dreamlike-diffusion-1.0",
-        torch_dtype=torch.float32,
-        safety_checker=None,
-        requires_safety_checker=False
-    )
-    
-    pipe.scheduler = pipe.scheduler_class.from_config(pipe.scheduler.config)  # default is ok
-    
-    pipe.enable_attention_slicing()
-    pipe.enable_sequential_cpu_offload()   # crucial for Streamlit Cloud
-    
-    return pipe.to("cpu")
+    try:
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "nitrosocke/Ghibli-Diffusion",          # one of few truly public models left
+            # "dreamlike-art/dreamlike-diffusion-1.0",   ← alternative (also public)
+            torch_dtype=torch.float32,
+            safety_checker=None,
+            requires_safety_checker=False,
+            variant=None
+        )
 
+        # Some memory optimizations for free CPU environment
+        pipe.enable_attention_slicing()
+        pipe.enable_sequential_cpu_offload()
 
-pipe = load_model()
+        return pipe.to("cpu")
 
-# ── UI ────────────────────────────────────────────────────────────
-col1, col2 = st.columns([5,2])
-
-with col1:
-    prompt = st.text_area("Prompt", 
-                         "beautiful anime girl, detailed eyes, fantasy landscape background",
-                         height=100)
-
-with col2:
-    steps = st.slider("Steps", 15, 50, 28)
-    guidance = st.slider("Guidance", 4.0, 12.0, 7.5, 0.5)
-    seed = st.number_input("Seed (-1 = random)", -1, 2147483647, -1)
-
-if st.button("Generate", type="primary"):
-    if not prompt.strip():
-        st.error("Please write a prompt")
+    except Exception as e:
+        st.error("Failed to load model")
+        st.exception(e)
         st.stop()
 
-    with st.spinner("Generating... (2–8 minutes on free CPU)"):
-        start = time.time()
-        
-        generator = None if seed == -1 else torch.Generator().manual_seed(seed)
-        
+
+# Load once
+pipe = load_model()
+
+# ==============================================
+#               INTERFACE
+# ==============================================
+col1, col2 = st.columns([5, 2])
+
+with col1:
+    prompt = st.text_area(
+        "Your prompt",
+        value="a magical forest with glowing mushrooms, Studio Ghibli style, soft light, detailed background",
+        height=110,
+        key="prompt"
+    )
+
+with col2:
+    st.write("")  # spacing
+    st.write("")
+    steps = st.slider("Steps", 15, 60, 30, 5)
+    guidance = st.slider("Guidance scale", 4.0, 14.0, 7.5, 0.5)
+    seed_input = st.number_input("Seed (-1 = random)", value=-1, min_value=-1)
+
+# Generate button
+if st.button("✨ Generate", type="primary", use_container_width=True):
+
+    if not prompt.strip():
+        st.warning("Please write something in the prompt field")
+        st.stop()
+
+    with st.spinner("Generating... (usually 3–12 minutes on free CPU)"):
         try:
+            start_time = time.time()
+
+            # Seed handling
+            generator = None
+            if seed_input != -1:
+                generator = torch.Generator(device="cpu").manual_seed(seed_input)
+
             image = pipe(
-                prompt,
+                prompt=prompt,
                 num_inference_steps=steps,
                 guidance_scale=guidance,
                 generator=generator,
                 height=512,
                 width=512
             ).images[0]
-            
+
+            took = time.time() - start_time
+
+            st.success(f"Done in {took:.1f} seconds!")
+
+            # Show result
             st.image(image, use_column_width=True)
-            
+
+            # Download
             buf = io.BytesIO()
             image.save(buf, format="PNG")
-            st.download_button("Download", buf.getvalue(), "image.png", "image/png")
-            
-            st.caption(f"Done in {time.time()-start:.1f} seconds")
-            
+            byte_data = buf.getvalue()
+
+            st.download_button(
+                label="💾 Download PNG",
+                data=byte_data,
+                file_name=f"ghibli-style-{int(time.time())}.png",
+                mime="image/png",
+                use_container_width=True
+            )
+
         except Exception as e:
-            st.error("Generation failed")
+            st.error("Something went wrong during generation")
             st.exception(e)
 
+
+# Footer / info
 st.markdown("---")
-st.caption("Limitations: older model • lower quality than current private/token models • no negative prompt support in this lightweight version")
+st.caption(
+    "Model: nitrosocke/Ghibli-Diffusion (public, no token needed)\n"
+    "Style: anime / Studio Ghibli inspired\n"
+    "Expectations: modest quality • slow generation (CPU only)\n"
+    "Tip: 25–40 steps usually gives best balance"
+)
